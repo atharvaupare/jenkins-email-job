@@ -1,10 +1,24 @@
+@NonCPS
+String commitsAsText(changeSets) {
+  def out = []
+  changeSets.each { cs ->
+    cs.items.each { e ->
+      def authorName = e.getAuthor()?.getDisplayName()   // String only (no User objects)
+      def msg        = e.getMsg()
+      def shortSha   = e.getCommitId()?.take(7)
+      out << "- ${msg} (by ${authorName} @ ${shortSha})"
+    }
+  }
+  return out ? out.join('\n') : "- Initial build or no recorded changeSets"
+}
+
 pipeline {
   agent any
   options { disableConcurrentBuilds() }
-  triggers { githubPush() }
+  triggers { githubPush() }   // webhook → /github-webhook/
 
   environment {
-    RECIPIENTS = 'atharvaupare5@gmail.com'   // <- change this
+    RECIPIENTS = 'atharvaupare5@gmail.com'   // <-- change this
   }
 
   stages {
@@ -23,7 +37,7 @@ pipeline {
 
     stage('Collect changes') {
       steps {
-        // Produce: (1) name-status (A/M/D) and (2) numstat (added/removed per file)
+        // (1) name-status (A/M/D/R)  (2) numstat: +added \t -removed \t path
         bat '''
         @echo off
         setlocal ENABLEDELAYEDEXPANSION
@@ -34,12 +48,11 @@ pipeline {
           for /f "usebackq delims=" %%a in (`git rev-parse HEAD~1`) do set BASE=%%a
         )
 
-        REM Detect renames too (-M)
         git diff --name-status -M %BASE% HEAD > changes.txt
         git diff --numstat     -M %BASE% HEAD > numstat.tsv
 
-        if not exist changes.txt echo No changes detected compared to %BASE%>changes.txt
-        if not exist numstat.tsv echo No line changes detected compared to %BASE%>numstat.tsv
+        if not exist changes.txt  echo No changes detected compared to %BASE%>changes.txt
+        if not exist numstat.tsv  echo No line changes detected compared to %BASE%>numstat.tsv
 
         endlocal
         '''
@@ -47,30 +60,22 @@ pipeline {
           // A/M/D list
           env.CHANGED_FILES = readFile('changes.txt').trim()
 
-          // Commit summaries via Jenkins changeSets
-          def commits = []
-          for (def cs in currentBuild.changeSets) {
-            for (def e in cs.items) {
-              commits << "- ${e.msg} (by ${e.author} @ ${e.commitId.take(7)})"
-            }
-          }
-          if (commits.isEmpty()) commits << "- Initial build or no recorded changeSets"
-          env.COMMITS_LIST = commits.unique().join('\n')
+          // Commit summaries (safe: strings only)
+          env.COMMITS_LIST = commitsAsText(currentBuild.changeSets)
 
-          // Build a pretty table from numstat (tab-separated: added, removed, path)
-          def raw = readFile('numstat.tsv')
+          // Pretty table from numstat (tab-separated: added, removed, path)
+          def raw   = readFile('numstat.tsv')
           def lines = raw.readLines()
           if (lines.isEmpty()) {
             env.NUMSTAT_TABLE = "No line changes detected"
           } else {
             def rows = []
-            rows << String.format("%6s %6s  %s", "+added", "-removed", "file")
-            rows << String.format("%6s %6s  %s", "------", "--------", "----")
+            rows << String.format("%6s %8s  %s", "+added", "-removed", "file")
+            rows << String.format("%6s %8s  %s", "------", "--------", "----")
             lines.each { ln ->
               def parts = ln.split("\\t")
               if (parts.size() >= 3) {
-                // Binary changes appear as '-' in numstat; keep as-is
-                rows << String.format("%6s %6s  %s", parts[0], parts[1], parts[2])
+                rows << String.format("%6s %8s  %s", parts[0], parts[1], parts[2])
               } else {
                 rows << ln
               }
@@ -97,13 +102,13 @@ Branch: ${env.BRANCH_NAME ?: 'main'}
 Result: ${currentBuild.currentResult}
 
 Commits:
-${env.COMMITS_LIST ?: '- none -'}
+${env.COMMITS_LIST}
 
 Changed files (status\\tpath):
-${env.CHANGED_FILES ?: '- none -'}
+${env.CHANGED_FILES}
 
 Line changes (+added, -removed):
-${env.NUMSTAT_TABLE ?: '- none -'}
+${env.NUMSTAT_TABLE}
 """.stripIndent()
       )
     }
