@@ -3,7 +3,7 @@ String commitsAsText(changeSets) {
   def out = []
   changeSets.each { cs ->
     cs.items.each { e ->
-      def authorName = e.getAuthor()?.getDisplayName()   // String only (no User objects)
+      def authorName = e.getAuthor()?.getDisplayName()
       def msg        = e.getMsg()
       def shortSha   = e.getCommitId()?.take(7)
       out << "- ${msg} (by ${authorName} @ ${shortSha})"
@@ -15,7 +15,7 @@ String commitsAsText(changeSets) {
 pipeline {
   agent any
   options { disableConcurrentBuilds() }
-  triggers { githubPush() }   // webhook → /github-webhook/
+  triggers { githubPush() }
 
   environment {
     RECIPIENTS = 'atharvaupare5@gmail.com'   // <-- change this
@@ -25,7 +25,6 @@ pipeline {
     stage('Checkout') {
       steps {
         checkout scm
-        // ensure full history for diffs
         bat 'git fetch --all --prune'
         bat 'git rev-parse --is-shallow-repository > shallow.txt 2>NUL || echo false>shallow.txt'
         script {
@@ -37,7 +36,6 @@ pipeline {
 
     stage('Collect changes') {
       steps {
-        // (1) name-status (A/M/D/R)  (2) numstat: +added \t -removed \t path
         bat '''
         @echo off
         setlocal ENABLEDELAYEDEXPANSION
@@ -49,45 +47,16 @@ pipeline {
         )
 
         git diff --name-status -M %BASE% HEAD > changes.txt
-        git diff --numstat     -M %BASE% HEAD > numstat.tsv
 
-        if not exist changes.txt  echo No changes detected compared to %BASE%>changes.txt
-        if not exist numstat.tsv  echo No line changes detected compared to %BASE%>numstat.tsv
+        if not exist changes.txt echo No changes detected compared to %BASE%>changes.txt
 
         endlocal
         '''
         script {
-          // A/M/D list
           env.CHANGED_FILES = readFile('changes.txt').trim()
-
-          // Commit summaries (safe: strings only)
-          env.COMMITS_LIST = commitsAsText(currentBuild.changeSets)
-
-          // Pretty table from numstat (tab-separated: added, removed, path)
-          def raw   = readFile('numstat.tsv')
-          def lines = raw.readLines()
-          if (lines.isEmpty()) {
-            env.NUMSTAT_TABLE = "No line changes detected"
-          } else {
-            def rows = []
-            rows << String.format("%6s %8s  %s", "+added", "-removed", "file")
-            rows << String.format("%6s %8s  %s", "------", "--------", "----")
-            lines.each { ln ->
-              def parts = ln.split("\\t")
-              if (parts.size() >= 3) {
-                rows << String.format("%6s %8s  %s", parts[0], parts[1], parts[2])
-              } else {
-                rows << ln
-              }
-            }
-            env.NUMSTAT_TABLE = rows.join("\n")
-          }
+          env.COMMITS_LIST  = commitsAsText(currentBuild.changeSets)
         }
       }
-    }
-
-    stage('Build/Test (optional)') {
-      steps { echo 'Add build/test steps here if needed' }
     }
   }
 
@@ -106,9 +75,6 @@ ${env.COMMITS_LIST}
 
 Changed files (status\\tpath):
 ${env.CHANGED_FILES}
-
-Line changes (+added, -removed):
-${env.NUMSTAT_TABLE}
 """.stripIndent()
       )
     }
